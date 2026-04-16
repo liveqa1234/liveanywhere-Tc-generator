@@ -148,32 +148,32 @@ export default function App() {
   const rmPdf = (sid) => upd(sid,{pdf:null,pdfName:""});
   const handleExistingTC = (file) => { if(!file)return; const r=new FileReader(); r.onload=e=>{setExistingTC(e.target.result.split(",")[1]);setExistingTCName(file.name);}; r.readAsDataURL(file); };
 
-  const callGemini = async (parts) => {
+  const callClaude = async (content) => {
     const key = geminiKey.trim();
-    if (!key) throw new Error("Gemini API 키를 입력해주세요.");
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-      { method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          contents:[{role:"user",parts}],
-          generationConfig:{maxOutputTokens:8192,temperature:0.7}
-        })
-      }
-    );
-    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||"Gemini API 오류: "+res.status); }
+    if (!key) throw new Error("Claude API 키를 입력해주세요.");
+    const messages = content.map(c => {
+      if (c.type==="text") return {type:"text",text:c.text};
+      if (c.type==="document") return {type:"document",source:{type:"base64",media_type:c.source.media_type,data:c.source.data}};
+      return null;
+    }).filter(Boolean);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01"},
+      body:JSON.stringify({
+        model:"claude-sonnet-4-20250514",
+        max_tokens:8192,
+        messages:[{role:"user",content:messages}]
+      })
+    });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||"Claude API 오류: "+res.status); }
     const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("")||"";
+    return data.content?.map(c=>c.text||"").join("")||"";
   };
 
   const callAndContinue = async (content) => {
-    const parts = content.map(c => {
-      if (c.type==="text") return {text: c.text};
-      if (c.type==="document") return {inline_data:{mime_type:c.source.media_type,data:c.source.data}};
-      return null;
-    }).filter(Boolean);
-    let raw = await callGemini(parts);
+    let raw = await callClaude(content);
     if (raw.length > 7000) {
-      const cont = await callGemini([...parts,{text:raw},{text:"응답이 잘렸습니다. 마지막 TC부터 같은 형식으로 이어서 작성해주세요."}]);
+      const cont = await callClaude([...content,{type:"text",text:raw},{type:"text",text:"응답이 잘렸습니다. 마지막 TC부터 같은 형식으로 이어서 작성해주세요."}]);
       raw += "\n" + cont;
     }
     return raw;
@@ -296,8 +296,7 @@ export default function App() {
       content.push({type:"document",source:{type:"base64",media_type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",data:existingTC}});
       if (sh.pdf) content.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:sh.pdf}});
       content.push({type:"text",text:prompt});
-      const parts = content.map(c=>c.type==="text"?{text:c.text}:c.type==="document"?{inline_data:{mime_type:c.source.media_type,data:c.source.data}}:null).filter(Boolean);
-      const raw = await callGemini(parts);
+      const raw = await callClaude(content);
       const sections = [];
       raw.split(/^SECTION:/im).filter(Boolean).forEach(block=>{
         const title = (block.match(/^(.+)$/m)||[])[1]||"분석 결과";
@@ -339,8 +338,7 @@ export default function App() {
       content.push({type:"document",source:{type:"base64",media_type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",data:existingTC}});
       if (sh.pdf) content.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:sh.pdf}});
       content.push({type:"text",text:prompt});
-      const parts = content.map(c=>c.type==="text"?{text:c.text}:c.type==="document"?{inline_data:{mime_type:c.source.media_type,data:c.source.data}}:null).filter(Boolean);
-      const raw = await callGemini(parts);
+      const raw = await callClaude(content);
       const qMatch = raw.match(/===QUALITY_SUMMARY===([\s\S]*?)===END_QUALITY===/i);
       const qualitySummary = {};
       if (qMatch) { qMatch[1].split("\n").forEach(line=>{ const [k,v]=line.split(":").map(s=>s.trim()); if(k&&v)qualitySummary[k]=isNaN(v)?v:Number(v); }); }
@@ -609,7 +607,7 @@ export default function App() {
         <div style={{width:38,height:38,background:"linear-gradient(135deg,"+C.accent+",#5b4fcf)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>{"🤖"}</div>
         <div>
           <div style={{fontSize:16,fontWeight:700}}>{"TC Auto Generator"}</div>
-          <div style={{fontSize:11,color:C.muted}}>{"LiveAnywhere QA · Powered by Gemini"}</div>
+          <div style={{fontSize:11,color:C.muted}}>{"LiveAnywhere QA · Powered by Claude"}</div>
         </div>
       </div>
 
@@ -620,12 +618,12 @@ export default function App() {
           <div><label style={lbl}>{"Wiki / 기획 링크 (선택)"}</label><input style={inp} value={wikiLink} onChange={e=>setWikiLink(e.target.value)} placeholder="https://..."/></div>
         </div>
         <div>
-          <label style={lbl}>{"Gemini API Key"}</label>
+          <label style={lbl}>{"Claude API Key"}</label>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <input style={{...inp,flex:1}} type="password" value={geminiKey} onChange={e=>{setGeminiKey(e.target.value);}} placeholder="AIza... (aistudio.google.com에서 발급)"/>
+            <input style={{...inp,flex:1}} type="password" value={geminiKey} onChange={e=>{setGeminiKey(e.target.value);}} placeholder="sk-ant-... (console.anthropic.com에서 발급)"/>
             {geminiKey&&<span style={{fontSize:11,color:C.green,whiteSpace:"nowrap"}}>{"✓ 입력됨"}</span>}
           </div>
-          <div style={{fontSize:11,color:C.muted,marginTop:4}}>{"Gemini 2.0 Flash · 무료: 분당 15회, 일 1500회"}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:4}}>{"Claude Sonnet · console.anthropic.com에서 API 키 발급"}</div>
         </div>
         <div>
           <label style={lbl}>{"Figma Access Token (선택 · 피그마만 있을 때 입력)"}</label>
